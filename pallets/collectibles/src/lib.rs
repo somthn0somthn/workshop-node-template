@@ -200,6 +200,57 @@ pub mod pallet {
 			Self::deposit_event(Event::TransferSucceeded { from, to, collectible: collectible_id });
 			Ok(())
 		}
+
+		pub fn do_buy_collectible(
+			unique_id: [u8; 16],
+			to: T::AccountId,
+			bid_price: BalanceOf<T>,
+		) -> DispatchResult {
+			let mut collectible =
+				CollectibleMap::<T>::get(&unique_id).ok_or(Error::<T>::NoCollectible)?;
+			let from = collectible.owner;
+			ensure!(from != to, Error::<T>::TransferToSelf);
+			let mut from_owned = OwnerOfCollectibles::<T>::get(&from);
+
+			if let Some(ind) = from_owned.iter().position(|&id| id == unique_id) {
+				from_owned.swap_remove(ind);
+			} else {
+				return Err(Error::<T>::NoCollectible.into())
+			}
+
+			let mut to_owned = OwnerOfCollectibles::<T>::get(&to);
+			to_owned
+				.try_push(unique_id)
+				.map_err(|_id| Error::<T>::MaximumCollectiblesOwned)?;
+
+			if let Some(price) = collectible.price {
+				ensure!(bid_price >= price, Error::<T>::BidPriceTooLow);
+				T::Currency::transfer(
+					&to,
+					&from,
+					price,
+					frame_support::traits::ExistenceRequirement::KeepAlive,
+				)?;
+				Self::deposit_event(Event::Sold {
+					seller: from.clone(),
+					buyer: to.clone(),
+					collectible: unique_id,
+					price,
+				});
+			} else {
+				return Err(Error::<T>::NotForSale.into())
+			}
+
+			collectible.owner = to.clone();
+			collectible.price = None;
+
+			CollectibleMap::<T>::insert(&unique_id, collectible);
+			OwnerOfCollectibles::<T>::insert(&to, to_owned);
+			OwnerOfCollectibles::<T>::insert(&from, from_owned);
+			Self::deposit_event(Event::TransferSucceeded { from, to, collectible: unique_id });
+
+			Ok(())
+		}
 	}
 
 	// Pallet callable functions
@@ -251,6 +302,17 @@ pub mod pallet {
 			CollectibleMap::<T>::insert(&unique_id, collectible);
 
 			Self::deposit_event(Event::PriceSet { collectible: unique_id, price: new_price });
+			Ok(())
+		}
+
+		#[pallet::weight(0)]
+		pub fn buy_collectible(
+			origin: OriginFor<T>,
+			unique_id: [u8; 16],
+			bid_price: BalanceOf<T>,
+		) -> DispatchResult {
+			let buyer = ensure_signed(origin)?;
+			Self::do_buy_collectible(unique_id, buyer, bid_price)?;
 			Ok(())
 		}
 	}
